@@ -578,72 +578,126 @@ class DlnapDevice:
         pass
 
 
-def discover(name='', ip='', timeout=1, st=SSDP_ALL, mx=3, ssdp_version=1):
-    """ Discover UPnP devices in the local network.
-
-   name -- name or part of the name to filter devices
-   timeout -- timeout to perform discover
-   st -- st field of discovery packet
-   mx -- mx field of discovery packet
-   return -- list of DlnapDevice
-   """
-    st = st.format(ssdp_version)
-    payload = "\r\n".join([
-        'M-SEARCH * HTTP/1.1', 'User-Agent: {}/{}'.format(
-            __file__, __version__), 'HOST: {}:{}'.format(*SSDP_GROUP),
-        'Accept: */*', 'MAN: "ssdp:discover"', 'ST: {}'.format(st),
-        'MX: {}'.format(mx), '', ''
-    ])
-    devices = []
-    with _send_udp(SSDP_GROUP, payload) as sock:
-        start = time.time()
-        while True:
-            if time.time() - start > timeout:
-                # timed out
-                break
-            r, w, x = select.select([sock], [], [sock], 1)
-            if sock in r:
-                data, addr = sock.recvfrom(1024)
-                if ip and addr[0] != ip:
-                    continue
-
-                d = DlnapDevice(data, addr[0])
-                d.ssdp_version = ssdp_version
-                if d not in devices:
-                    if not name or name is None or name.lower(
-                    ) in d.name.lower():
-                        if not ip:
-                            devices.append(d)
-                        elif d.has_av_transport:
-                            # no need in further searching by ip
-                            devices.append(d)
-                            break
-
-            elif sock in x:
-                raise Exception('Getting response failed')
-            else:
-                # Nothing to read
-                pass
-    return devices
-
-
 #
 # Signal of Ctrl+C
 # =================================================================================================
-def signal_handler(signal, frame):
-    print(' Got Ctrl + C, exit now!')
-    sys.exit(1)
+# def signal_handler(signal, frame):
+#     print(' Got Ctrl + C, exit now!')
+#     sys.exit(1)
+
+# signal.signal(signal.SIGINT, signal_handler)
 
 
-signal.signal(signal.SIGINT, signal_handler)
+def paired(li):
+    paired_list = []
+    current_command = None
+    current_tuple = ()
+    if len(li) % 2 != 0:
+        li.append('')
+    for element in li:
+        # element is command
+        if element.startswith('--') or element.startswith('-'):
+            # last command doesn't have argument
+            if current_command:
+                paired_list.append((current_command, ''))
+            current_command = element
+        # element is arg
+        else:
+            # what should happend
+            if current_command:
+                paired_list.append((current_command, element))
+                current_command = None
+            # no command but an argument, opps
+            else:
+                print(
+                    'Something is wrong, are you sure you typed command before argument?'
+                )
 
-if __name__ == '__main__':
-    import getopt
+    return paired_list
 
-    def usage():
+
+class Cli():
+    # setup
+    device = ''
+    url = ''
+    vol = 10
+    position = '00:00:00'
+    timeout = 1
+    action = ''
+    logLevel = logging.WARN
+    compatibleOnly = True
+    ip = ''
+    ssdp_version = 1
+    devices = []
+    device_index = 0
+
+    def discover(self,
+                 name='',
+                 ip='',
+                 timeout=1,
+                 st=SSDP_ALL,
+                 mx=3,
+                 ssdp_version=1):
+        """ Discover UPnP devices in the local network.
+
+    name -- name or part of the name to filter devices
+    timeout -- timeout to perform discover
+    st -- st field of discovery packet
+    mx -- mx field of discovery packet
+    return -- list of DlnapDevice
+    """
+        st = st.format(ssdp_version)
+        payload = "\r\n".join([
+            'M-SEARCH * HTTP/1.1', 'User-Agent: {}/{}'.format(
+                __file__, __version__), 'HOST: {}:{}'.format(*SSDP_GROUP),
+            'Accept: */*', 'MAN: "ssdp:discover"', 'ST: {}'.format(st),
+            'MX: {}'.format(mx), '', ''
+        ])
+        with _send_udp(SSDP_GROUP, payload) as sock:
+            start = time.time()
+            try:
+                while True:
+                    if time.time() - start > timeout:
+                        # timed out
+                        break
+                    r, w, x = select.select([sock], [], [sock], 1)
+                    if sock in r:
+                        data, addr = sock.recvfrom(1024)
+                        if ip and addr[0] != ip:
+                            continue
+
+                        d = DlnapDevice(data, addr[0])
+                        d.ssdp_version = ssdp_version
+                        if d not in self.devices:
+                            if not name or name is None or name.lower(
+                            ) in d.name.lower():
+
+                                self.devices.append(d)
+                                print('{} {}'.format(self.devices.index(d), d))
+                                if not ip:
+                                    pass
+                                elif d.has_av_transport:
+                                    # no need in further searching by ip
+                                    break
+
+                    elif sock in x:
+                        raise Exception('Getting response failed')
+                    else:
+                        # Nothing to read
+                        pass
+            except KeyboardInterrupt:
+                pass
+
+    def usage(self):
         print(
-            '{} [--ip <device ip>] [-d[evice] <name>] [--all] [-t[imeout] <seconds>] [--play <url>] [--pause] [--stop]'.
+            '{} [--search <timeout>] [--index <index of device>] [--ip <device ip>] [-d[evice] <name>] [--all] [-t[imeout] <seconds>] [--play <url>] [--pause] [--stop]'.
             format(__file__))
+        print(
+            ' --search <timeout> - search for devices, press Ctrl-C to stop searching.'
+        )
+        print(
+            ' --index <index of device> - use the <index>th device of the device list.'
+        )
         print(
             ' --ip <device ip> - ip address for faster access to the known device'
         )
@@ -664,158 +718,139 @@ if __name__ == '__main__':
         print(
             ' --seek <position in HH:MM:SS> - set current position for playback'
         )
-        print(' --timeout <seconds> - discover timeout')
         print(
             ' --ssdp-version <version> - discover devices by protocol version, default 1'
         )
         print(' --help - this help')
 
-    def version():
+    def version(self):
         print(__version__)
 
-    try:
-        opts, args = getopt.getopt(
-            sys.argv[1:],
-            "hvd:t:i:",
-            [  # information arguments
-                'help',
-                'version',
-                'log=',
+    def process_command(self, paired_command_list):
+        for opt, arg in paired_command_list:
+            if opt in ('-h', '--help'):
+                self.usage()
+            elif opt in ('-s', '--search'):
+                self.action = 'search'
+                self.timeout = float(arg)
+            elif opt in ('-v', '--version'):
+                self.version()
+            elif opt in ('--log'):
+                if arg.lower() == 'debug':
+                    self.logLevel = logging.DEBUG
+                elif arg.lower() == 'info':
+                    self.logLevel = logging.INFO
+                elif arg.lower() == 'warn':
+                    self.logLevel = logging.WARN
+            elif opt in ('--all'):
+                self.compatibleOnly = False
+            elif opt in ('-d', '--device'):
+                self.device = arg
+            elif opt in ('--ssdp-version'):
+                self.ssdp_version = int(arg)
+            elif opt in ('--index', 'I'):
+                self.device_index = int(arg)
+            elif opt in ('-i', '--ip'):
+                self.ip = arg
+                self.compatibleOnly = False
+                self.timeout = 10
+            elif opt in ('--list'):
+                self.action = 'list'
+            elif opt in ('--play'):
+                self.action = 'play'
+                self.url = arg
+            elif opt in ('--pause'):
+                self.action = 'pause'
+            elif opt in ('--stop'):
+                self.action = 'stop'
+            elif opt in ('--volume'):
+                self.action = 'volume'
+                self.vol = arg
+            elif opt in ('--seek'):
+                self.action = 'seek'
+                self.position = arg
+            elif opt in ('--mute'):
+                self.action = 'mute'
+            elif opt in ('--unmute'):
+                self.action = 'unmute'
+            elif opt in ('--info'):
+                self.action = 'info'
+            elif opt in ('--media-info'):
+                self.action = 'media-info'
 
-                # device arguments
-                'device=',
-                'ip=',
+    def run(self):
+        run = True
+        while run:
+            command = input('Command: ')
+            command_list = command.split(' ')
 
-                # action arguments
-                'play=',
-                'pause',
-                'stop',
-                'volume=',
-                'mute',
-                'unmute',
-                'seek=',
+            paired_command_list = paired(command_list)
+            # print(paired_command_list)
+            self.action = None
+            self.process_command(paired_command_list)
 
-                # discover arguments
-                'list',
-                'all',
-                'timeout=',
-                'ssdp-version=',
+            logging.basicConfig(level=self.logLevel)
 
-                # transport info
-                'info',
-                'media-info'
-            ])
-    except getopt.GetoptError:
-        usage()
-        sys.exit(1)
+            st = URN_AVTransport_Fmt if self.compatibleOnly else SSDP_ALL
 
-    device = ''
-    url = ''
-    vol = 10
-    position = '00:00:00'
-    timeout = 1
-    action = ''
-    logLevel = logging.WARN
-    compatibleOnly = True
-    ip = ''
-    ssdp_version = 1
-    for opt, arg in opts:
-        if opt in ('-h', '--help'):
-            usage()
-            sys.exit(0)
-        elif opt in ('-v', '--version'):
-            version()
-            sys.exit(0)
-        elif opt in ('--log'):
-            if arg.lower() == 'debug':
-                logLevel = logging.DEBUG
-            elif arg.lower() == 'info':
-                logLevel = logging.INFO
-            elif arg.lower() == 'warn':
-                logLevel = logging.WARN
-        elif opt in ('--all'):
-            compatibleOnly = False
-        elif opt in ('-d', '--device'):
-            device = arg
-        elif opt in ('-t', '--timeout'):
-            timeout = float(arg)
-        elif opt in ('--ssdp-version'):
-            ssdp_version = int(arg)
-        elif opt in ('-i', '--ip'):
-            ip = arg
-            compatibleOnly = False
-            timeout = 10
-        elif opt in ('--list'):
-            action = 'list'
-        elif opt in ('--play'):
-            action = 'play'
-            url = arg
-        elif opt in ('--pause'):
-            action = 'pause'
-        elif opt in ('--stop'):
-            action = 'stop'
-        elif opt in ('--volume'):
-            action = 'volume'
-            vol = arg
-        elif opt in ('--seek'):
-            action = 'seek'
-            position = arg
-        elif opt in ('--mute'):
-            action = 'mute'
-        elif opt in ('--unmute'):
-            action = 'unmute'
-        elif opt in ('--info'):
-            action = 'info'
-        elif opt in ('--media-info'):
-            action = 'media-info'
+            # print(self.action)
+            if self.action == 'search':
+                self.discover(
+                    name=self.device,
+                    ip=self.ip,
+                    timeout=self.timeout,
+                    st=st,
+                    ssdp_version=self.ssdp_version)
 
-    logging.basicConfig(level=logLevel)
+            if self.action == 'list':
+                print('Discovered devices:')
+                for d in self.devices:
+                    print('{} {} {}'.format(
+                        self.device_index, '[a]'
+                        if d.has_av_transport else '[x]', d))
 
-    st = URN_AVTransport_Fmt if compatibleOnly else SSDP_ALL
-    allDevices = discover(
-        name=device, ip=ip, timeout=timeout, st=st, ssdp_version=ssdp_version)
-    if not allDevices:
-        print('No compatible devices found.')
-        sys.exit(1)
+            if not self.devices:
+                print('No compatible devices found.')
+                continue
+            else:
+                d = self.devices[self.device_index]
 
-    if action in ('', 'list'):
-        print('Discovered devices:')
-        for d in allDevices:
-            print(' {} {}'.format('[a]' if d.has_av_transport else '[x]', d))
-        sys.exit(0)
+            if self.url != '' and self.url.lower().replace(
+                    'https://', '').replace('www.', '').startswith('youtube.'):
+                import subprocess
+                process = subprocess.Popen(
+                    ['youtube-dl', '-g', url], stdout=subprocess.PIPE)
+                url, err = process.communicate()
 
-    d = allDevices[0]
-    print(d)
+            if self.action == 'play':
+                try:
+                    if self.url != '':
+                        d.stop()
+                        d.set_current_media(url=self.url)
+                        d.play()
+                    else:
+                        d.play()
+                except Exception as e:
+                    print('Device is unable to play media.')
+                    logging.warn('Play exception:\n{}'.format(
+                        traceback.format_exc()))
+            elif self.action == 'pause':
+                d.pause()
+            elif self.action == 'stop':
+                d.stop()
+            elif self.action == 'volume':
+                d.volume(self.vol)
+            elif self.action == 'seek':
+                d.seek(self.position)
+            elif self.action == 'mute':
+                d.mute()
+            elif self.action == 'unmute':
+                d.unmute()
+            elif self.action == 'info':
+                print(d.info())
+            elif self.action == 'media-info':
+                print(d.media_info())
 
-    if url.lower().replace('https://', '').replace('www.',
-                                                   '').startswith('youtube.'):
-        import subprocess
-        process = subprocess.Popen(
-            ['youtube-dl', '-g', url], stdout=subprocess.PIPE)
-        url, err = process.communicate()
 
-    if action == 'play':
-        try:
-            d.stop()
-            d.set_current_media(url=url)
-            d.play()
-        except Exception as e:
-            print('Device is unable to play media.')
-            logging.warn('Play exception:\n{}'.format(traceback.format_exc()))
-            sys.exit(1)
-    elif action == 'pause':
-        d.pause()
-    elif action == 'stop':
-        d.stop()
-    elif action == 'volume':
-        d.volume(vol)
-    elif action == 'seek':
-        d.seek(position)
-    elif action == 'mute':
-        d.mute()
-    elif action == 'unmute':
-        d.unmute()
-    elif action == 'info':
-        print(d.info())
-    elif action == 'media-info':
-        print(d.media_info())
+cli = Cli()
+cli.run()
